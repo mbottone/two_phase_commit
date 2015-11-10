@@ -1,0 +1,25 @@
+Two Phase Commit Protocol Project
+Advanced Distributed Systems - CSCI 8780
+Fall 2015
+Michael Bottone and Anumita Srivastava
+
+Description:
+
+	See - http://cobweb.cs.uga.edu/~laks/ADCS-2015-Fall/Programming-Project.pdf
+
+	This is a system that makes use of a coordinator and two participants to set up a two phase commit protocol for a ticket booking system. The coordinator is in charge of booking tickets for a hotel and concert. All nodes implement a Communication substrate to communicate with each other and a failure recovery process.
+
+Usage:
+
+	There are makefiles in both the participant and coordinator folders.
+
+	Coordinator:
+		make compile
+		make run
+		make clean
+
+	Participant:
+		make compile
+		make hotel
+		make concert
+		make clean

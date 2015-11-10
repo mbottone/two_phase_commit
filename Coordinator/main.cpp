@@ -1,6 +1,6 @@
 //
 //  main.cpp
-//  TicketBooking
+//  Coordinator
 //
 //  Name - Michael Bottone
 //  Advanced Distributed Systems - Fall 2015
@@ -18,24 +18,22 @@
 #include <netdb.h>
 #include <queue>
 #include <time.h>
+#include <signal.h>
 
 using namespace std;
 
 // ** Global Types and Properties
 
-enum CommitStatus
-{
-    INITIAL = 0,
-    REQUEST_SENT = 1,
-    AGREEMENT_RECIEVED = 2,
-    ACTION_SEND = 3,
-    ACK_RECIEVED = 4
-};
-
 enum ActionType
 {
     ROLLBACK = 0,
     COMMIT = 1
+};
+
+enum VoteStatus
+{
+    VOTE_NO = 0,
+    VOTE_YES = 1
 };
 
 enum SystemStatus
@@ -45,6 +43,8 @@ enum SystemStatus
     FAILED = 2,
     FINISHED = 3
 };
+
+SystemStatus system_status;
 
 struct Packet
 {
@@ -75,7 +75,7 @@ struct Response
 {
     int requestId = 0;
     bool ack;
-    int status;
+    VoteStatus status;
     int socket;
     
     static Response createFromPacket(Packet p)
@@ -86,7 +86,7 @@ struct Response
         res.requestId = p.data[1];
         if (!res.ack)
         {
-            res.status = p.data[2];
+            res.status = VoteStatus(p.data[2]);
         }
         res.socket = p.socket;
         
@@ -99,8 +99,6 @@ struct BookingRequest
     int id;
     int tickets;
     vector<int> dates;
-    
-    CommitStatus status = INITIAL;
     
     void print()
     {
@@ -116,7 +114,7 @@ struct BookingRequest
     {
         Packet p;
         
-        int l = (int) dates.size() + 3;
+        int l = (int) dates.size() + 4;
         
         time_t currentTime;
         time(&currentTime);
@@ -126,9 +124,10 @@ struct BookingRequest
         intData[0] = p.timestamp;
         intData[1] = id;
         intData[2] = tickets;
+        intData[3] = (int) dates.size();
         for (int i = 0;i < dates.size();i ++)
         {
-            intData[i + 3] = dates[i];
+            intData[4 + i] = dates[i];
         }
         
         p.data = intData;
@@ -160,8 +159,6 @@ struct BookingRequest
         return p;
     }
 };
-
-SystemStatus system_status;
 
 // ** Global Functions **
 
@@ -237,7 +234,10 @@ private:
         if (bytesRecieved > 0)
         {
             Packet packet = Packet::createFromRawData(buffer, socket, (int) bytesRecieved);
-            inputBuffer.push(packet);
+            if (system_status == NORMAL)
+            {
+                inputBuffer.push(packet);
+            }
         }
     }
     
@@ -246,7 +246,7 @@ private:
     {
         int * buffer = new int[64];
         
-        while (system_status == NORMAL || system_status == RECOVERY)
+        while (system_status != FINISHED)
         {
             recieveDataFromSocket(hotelSocket, buffer);
             recieveDataFromSocket(concertSocket, buffer);
@@ -264,7 +264,7 @@ private:
     // Threaded function to process buffers
     void * processBuffers(void *)
     {
-        while (system_status == NORMAL || system_status == RECOVERY)
+        while (system_status != FINISHED)
         {
             if (!outputBuffer.empty())
             {
@@ -317,6 +317,7 @@ public:
         concertSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         
         connectToParticipants();
+        
         startSubstrate();
     }
     
@@ -347,7 +348,11 @@ public:
         while ((!hotelRes || !concertRes) && system_status == NORMAL)
         {
             time(&currentTime);
-            if (currentTime - startTime > 10) { break; }
+            if (currentTime - startTime > 10)
+            {
+                cout << "Timeout..." << endl;
+                break;
+            }
             
             if (!responseBuffer.empty())
             {
@@ -386,16 +391,27 @@ public:
     
     void stopSubstrate()
     {
+        if (system_status == FINISHED)
+        {
+            Packet finishPacket;
+            finishPacket.data = new int[1];
+            finishPacket.data[0] = 0;
+            finishPacket.length = sizeof(int);
+            finishPacket.socket = hotelSocket;
+            finishPacket.sendPacket();
+            finishPacket.socket = concertSocket;
+            finishPacket.sendPacket();
+        }
+        
         close(hotelSocket);
         close(concertSocket);
     }
     
     void failSystem()
     {
-        stopSubstrate();
-        
         outputBuffer = queue<Packet>();
         inputBuffer = queue<Packet>();
+        responseBuffer = queue<Response>();
         
         cout << "Communication Substrate failed." << endl;
     }
@@ -526,7 +542,7 @@ private:
             return false;
         }
         
-        if (r1.status && r2.status)
+        if (r1.status == VOTE_YES && r2.status == VOTE_YES)
         {
             status = comm->sendAction(currentRequest, COMMIT);
             outputFile << currentRequest.id << " Success" << endl;
@@ -580,13 +596,14 @@ private:
             cout << "System fully recovered." << endl;
         }
         
-        while (!requests.empty() && (system_status == NORMAL || system_status == RECOVERY))
+        while (!requests.empty() && system_status == NORMAL)
         {
             currentRequest = requests.front();
             if (twoPhaseCommit())
             {
                 requests.pop();
                 currentRecord ++;
+                sleep(2);
             }
         }
         
@@ -618,9 +635,8 @@ private:
         else
         {
             outputFile.open ("output.txt", ios::trunc);
+            comm = new CommunicationSubstrate(hotelIP, concertIP);
         }
-        
-        comm = new CommunicationSubstrate(hotelIP, concertIP);
     }
     
 public:
@@ -710,6 +726,8 @@ int main(int argc, const char * argv[])
     }
     
     string configFile = argv[1];
+    
+    signal(SIGPIPE, SIG_IGN);
     
     Coordinator * coor = new Coordinator(configFile);
     coor->startServer();
